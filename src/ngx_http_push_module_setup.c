@@ -190,10 +190,6 @@ static char *ngx_http_push_subscriber(ngx_conf_t *cf, ngx_command_t *cmd, void *
 	else if(ngx_strncmp(value->data, "stream-chunked", sizeof("stream-chunked")-1)==0) {
 		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED;
 	}
-	else if(ngx_strncmp(value->data, "stream-raw", sizeof("stream-raw")-1)==0) {
-		//raw streaming is evil.
-		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_RAW;
-	}
 	else { // if(ngx_strncmp(value->data, "long-poll", 4)==0)
 		*field=NGX_HTTP_PUSH_MECHANISM_LONGPOLL;
 	}
