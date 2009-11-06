@@ -111,7 +111,7 @@ static char *	ngx_http_push_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	ngx_conf_merge_sec_value(conf->buffer_timeout, prev->buffer_timeout, NGX_HTTP_PUSH_DEFAULT_BUFFER_TIMEOUT);
 	ngx_conf_merge_value(conf->max_messages, prev->max_messages, NGX_HTTP_PUSH_DEFAULT_MAX_MESSAGES);
 	ngx_conf_merge_value(conf->min_messages, prev->min_messages, NGX_HTTP_PUSH_DEFAULT_MIN_MESSAGES);
-	ngx_conf_merge_value(conf->subscriber_concurrency, prev->subscriber_concurrency, NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_LASTIN);
+	ngx_conf_merge_value(conf->subscriber_concurrency, prev->subscriber_concurrency, NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_BROADCAST);
 	ngx_conf_merge_value(conf->subscriber_poll_mechanism, prev->subscriber_poll_mechanism, NGX_HTTP_PUSH_MECHANISM_LONGPOLL);
 	ngx_conf_merge_value(conf->authorize_channel, prev->authorize_channel, 0);
 	ngx_conf_merge_value(conf->store_messages, prev->store_messages, 1);
@@ -143,27 +143,38 @@ static char *ngx_http_push_setup_handler(ngx_conf_t *cf, void * conf, ngx_int_t 
 	return NGX_CONF_OK;
 }
 
+typedef struct {
+	char                           *str;
+	ngx_int_t                       val;
+} ngx_http_push_strval_t;
+
+static ngx_int_t ngx_http_push_strval(ngx_str_t string, ngx_http_push_strval_t strval[], ngx_int_t strval_len, ngx_int_t *val) {
+	ngx_int_t                      i;
+	for(i=0; i<strval_len; i++) {
+		if(ngx_strncasecmp(string.data, (u_char *)strval[i].str, string.len)==0) {
+			*val = strval[i].val;
+			return NGX_OK;
+		}
+	}
+	return NGX_DONE; //nothing matched
+}
+
 static char *ngx_http_push_set_subscriber_concurrency(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-	ngx_str_t                      *value=&(((ngx_str_t *) cf->args->elts)[1]);
+	static ngx_http_push_strval_t  concurrency[] = {
+		{ "first"    , NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_FIRSTIN   },
+		{ "last"     , NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_LASTIN    },
+		{ "broadcast", NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_BROADCAST }
+	};
 	ngx_int_t                      *field = (ngx_int_t *) ((char *) conf + cmd->offset);
+	
 	if (*field != NGX_CONF_UNSET) {
 		return "is duplicate";
 	}
-	if(ngx_strncmp(value->data, "first", 5)==0) {
-		*field=NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_FIRSTIN;
-	}
-	else if(ngx_strncmp(value->data, "last", 4)==0) {
-		*field=NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_LASTIN;
-	}
-	else if(ngx_strncmp(value->data, "broadcast", 9)==0) {
-		*field=NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_BROADCAST;
-	}
-	else {
-		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "Unexpected value for push_subscriber_concurrency.");
+	
+	ngx_str_t                   value = (((ngx_str_t *) cf->args->elts)[1]);
+	if(ngx_http_push_strval(value, concurrency, 3, field)!=NGX_OK) {
+		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "invalid push_subscriber_concurrency value: %V", &value);
 		return NGX_CONF_ERROR;
-	}
-	if (cmd->post) {
-		return ((ngx_conf_post_t *) cmd->post)->post_handler(cf, (ngx_conf_post_t *) cmd->post, field);
 	}
 
 	return NGX_CONF_OK;
@@ -174,24 +185,26 @@ static char *ngx_http_push_publisher(ngx_conf_t *cf, ngx_command_t *cmd, void *c
 }
 
 static char *ngx_http_push_subscriber(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+	static ngx_http_push_strval_t  mech[] = {
+		{ "interval-poll", NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL },
+		{ "long-poll"    , NGX_HTTP_PUSH_MECHANISM_LONGPOLL     },
+		{ "stream-chunked", NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED },
+		{ "stream-multipart", NGX_HTTP_PUSH_MECHANISM_STREAM_MULTIPART }
+	};
 	ngx_int_t                      *field = (ngx_int_t *) ((char *) conf + cmd->offset);
-	ngx_str_t                      *value = &(((ngx_str_t *) cf->args->elts)[1]);
-	
 	if (*field != NGX_CONF_UNSET) {
 		return "is duplicate";
 	}
-	if(ngx_strncmp(value->data, "interval-poll", 8)==0) {
-		//not sure why anyone would want to use this, but meh. there it is.
-		*field=NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL;
+	
+	if(cf->args->nelts==1) { //no argument given
+		*field = NGX_HTTP_PUSH_MECHANISM_LONGPOLL; //default
 	}
-	else if(ngx_strncmp(value->data, "stream-multipart", sizeof("stream-multipart")-1)==0) {
-		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_MULTIPART;
-	}
-	else if(ngx_strncmp(value->data, "stream-chunked", sizeof("stream-chunked")-1)==0) {
-		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED;
-	}
-	else { // if(ngx_strncmp(value->data, "long-poll", 4)==0)
-		*field=NGX_HTTP_PUSH_MECHANISM_LONGPOLL;
+	else {
+		ngx_str_t                   value = (((ngx_str_t *) cf->args->elts)[1]);
+		if(ngx_http_push_strval(value, mech, 2, field)!=NGX_OK) {
+			ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "invalid push_subscriber value: %V", &value);
+			return NGX_CONF_ERROR;
+		}
 	}
 	
 	return ngx_http_push_setup_handler(cf, conf, &ngx_http_push_subscriber_handler);
@@ -217,6 +230,25 @@ static void ngx_http_push_exit_master(ngx_cycle_t *cycle) {
 	ngx_shmtx_unlock(&shpool->mutex);
 }
 
+static char *ngx_http_push_set_message_buffer_length(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+	char                           *p = conf;
+	ngx_int_t                      *min, *max;
+	ngx_str_t                      *value;
+	ngx_int_t                       intval;
+	min = (ngx_int_t *) (p + offsetof(ngx_http_push_loc_conf_t, min_messages));
+	max = (ngx_int_t *) (p + offsetof(ngx_http_push_loc_conf_t, max_messages));
+	if(*min != NGX_CONF_UNSET || *max != NGX_CONF_UNSET) {
+		return "is duplicate";
+	}
+	value = cf->args->elts;
+	if((intval = ngx_atoi(value[1].data, value[1].len))==NGX_ERROR) {
+		return "invalid number";
+	}
+	*min = intval;
+	*max = intval;
+	
+	return NGX_CONF_OK;
+}
 
 
 static ngx_command_t  ngx_http_push_commands[] = {
@@ -247,6 +279,13 @@ static ngx_command_t  ngx_http_push_commands[] = {
       ngx_conf_set_num_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_push_loc_conf_t, max_messages),
+      NULL },
+	  
+	{ ngx_string("push_message_buffer_length"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_push_set_message_buffer_length,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
       NULL },
 	  
 	{ ngx_string("push_min_message_recipients"),
@@ -303,23 +342,6 @@ static ngx_command_t  ngx_http_push_commands[] = {
       ngx_conf_set_num_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_push_loc_conf_t, max_channel_id_length),
-      NULL },
-
-	  
-	//deprecated and misleading. remove no earlier than november 2009.
-	{ ngx_string("push_buffer_size"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_size_slot,
-      NGX_HTTP_MAIN_CONF_OFFSET,
-      offsetof(ngx_http_push_main_conf_t, shm_size),
-      NULL },
-	
-	//deprecated. remove no earlier than november 2009.
-	{ ngx_string("push_queue_messages"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_flag_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_push_loc_conf_t, store_messages),
       NULL },
     
     ngx_null_command
