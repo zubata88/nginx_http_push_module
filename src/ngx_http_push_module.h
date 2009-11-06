@@ -13,8 +13,12 @@
 #define NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_FIRSTIN 1
 #define NGX_HTTP_PUSH_SUBSCRIBER_CONCURRENCY_BROADCAST 2
 
-#define NGX_HTTP_PUSH_MECHANISM_LONGPOLL 0
-#define NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL 1
+#define NGX_HTTP_PUSH_MECHANISM_LONGPOLL 1
+#define NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL 2
+#define NGX_HTTP_PUSH_MECHANISM_STREAM         3
+#define NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED 3
+#define NGX_HTTP_PUSH_MECHANISM_STREAM_MULTIPART 4
+#define NGX_HTTP_PUSH_MECHANISM_STREAM_RAW 5
 
 #define NGX_HTTP_PUSH_MIN_MESSAGE_RECIPIENTS 0
 
@@ -82,6 +86,7 @@ typedef struct ngx_http_push_subscriber_cleanup_s ngx_http_push_subscriber_clean
 typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
 	ngx_http_request_t             *request;
+	ngx_int_t                       mechanism; //subscription mechanism
 	ngx_http_push_subscriber_cleanup_t *clndata; 
 } ngx_http_push_subscriber_t;
 

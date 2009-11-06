@@ -238,8 +238,9 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				ngx_http_push_subscriber_t *subscriber_sentinel;
 				
 				case NGX_HTTP_PUSH_MECHANISM_LONGPOLL:
-					//long-polling subscriber. wait for a message.
-					
+				case NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED:
+				case NGX_HTTP_PUSH_MECHANISM_STREAM_MULTIPART:
+				case NGX_HTTP_PUSH_MECHANISM_STREAM_RAW:
 					//subscribers are queued up in a local pool. Queue sentinels are separate and also local, but not in the pool.
 					ngx_shmtx_lock(&shpool->mutex);
 					sentinel = &channel->workers_with_subscribers;
@@ -299,6 +300,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 					
 					subscriber->request = r;
 					subscriber->clndata=clndata;
+					subscriber->mechanism = cf->subscriber_poll_mechanism;
 					
 					ngx_shmtx_lock(&shpool->mutex);
 					channel->subscribers++; // do this only when we know everything went okay.

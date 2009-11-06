@@ -181,7 +181,18 @@ static char *ngx_http_push_subscriber(ngx_conf_t *cf, ngx_command_t *cmd, void *
 		return "is duplicate";
 	}
 	if(ngx_strncmp(value->data, "interval-poll", 8)==0) {
+		//not sure why anyone would want to use this, but meh. there it is.
 		*field=NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL;
+	}
+	else if(ngx_strncmp(value->data, "stream-multipart", sizeof("stream-multipart")-1)==0) {
+		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_MULTIPART;
+	}
+	else if(ngx_strncmp(value->data, "stream-chunked", sizeof("stream-chunked")-1)==0) {
+		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_CHUNKED;
+	}
+	else if(ngx_strncmp(value->data, "stream-raw", sizeof("stream-raw")-1)==0) {
+		//raw streaming is evil.
+		*field=NGX_HTTP_PUSH_MECHANISM_STREAM_RAW;
 	}
 	else { // if(ngx_strncmp(value->data, "long-poll", 4)==0)
 		*field=NGX_HTTP_PUSH_MECHANISM_LONGPOLL;
