@@ -7,18 +7,20 @@ wait on idle connections via upstream proxies or making your code all
 asynchronous and concurrent.
 
 ---------------- Configuration Directives & Variables ------------------------
-Variables:
-$push_channel_id
-  A token uniquely identifying a communication channel. Must be present in the
-  context of the push_subscriber and push_publisher directives.
-  Example:
-    set $push_channel_id $arg_id; 
-	#channel id is now the url query string parameter "id"
-	#(/foo/bar?id=channel_id_string)
-
 Directives:
 
 ==Publisher/Subscriber==
+
+push_channel_id [ string ]
+  default: none
+  context: http, server, location
+  A token uniquely identifying a communication channel. Must be present in the
+  context of the push_subscriber and push_publisher directives. The value of this
+  directive can and should use variables.
+  Example:
+    push_channel_id $arg_id; 
+	#channel id is now the url query string parameter "id"
+	#(/foo/bar?id=channel_id_string)
 
 push_subscriber [ long-poll | interval-poll ]
   default: long-poll
@@ -125,6 +127,15 @@ push_max_channel_subscribers [ number ]
   default: 0 (unlimited)
   context: main, server, location
   Maximum concurrent subscribers. Pretty self-explanatory.
+  
+Variables:
+$push_channel_id (deprecated)
+  A token uniquely identifying a communication channel. Must be present in the
+  context of the push_subscriber and push_publisher directives.
+  Example:
+    set $push_channel_id $arg_id; 
+	#channel id is now the url query string parameter "id"
+	#(/foo/bar?id=channel_id_string)
 
 --------------------------- Example Config -----------------------------------
 http {
@@ -134,7 +145,7 @@ http {
 
   # internal publish endpoint (keep it private / protected)
   location /publish {
-    set $push_channel_id $arg_channel; #/?channel=239aff3 or some-such
+    push_channel_id $arg_channel; #/?channel=239aff3 or some-such
     push_publisher;
 
     push_message_timeout 2h;           # expire buffered messages after 2 hours
@@ -151,7 +162,7 @@ http {
     # - first: only the oldest subscriber request is kept, 409 for others.
     # - broadcast: any number of subscriber requests may be long-polling.
     push_subscriber_concurrency broadcast;
-    set $push_channel_id $arg_channel; #/?channel=239aff3 or some-such
+    push_channel_id $arg_channel; #/?channel=239aff3 or some-such
     default_type  text/plain;
   }
 }
@@ -167,7 +178,7 @@ queued.
 
 Upon sending a request to a push_publisher location, the message, contained in
 the publisher request body, will be sent to the channel identified by 
-$push_channel_id and to all presently connected channel subscribers. If there 
+push_channel_id and to all presently connected channel subscribers. If there 
 are no subscribers waiting for a message at the time, the publisher will be 
 sent to with a with a 202 Accepted response. Otherwise, a 201 Created response
 is sent. Additionally, the body of the publisher response will contain 

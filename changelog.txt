@@ -1,3 +1,4 @@
+ feature: push_channel_id is now a directive. using `$set push_channel_id` has been deprecated.
 0.69 (Nov. 17 2009)
  fix: publisher got a 201 Created response even if the channel had no subscribers at the time (should be 202 Accepted)
  fix: small memory leak after each message broadcast to a channel

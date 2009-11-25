@@ -50,6 +50,13 @@ typedef struct {
 } ngx_http_push_main_conf_t;
 
 typedef struct {
+	ngx_queue_t                     queue;
+	ngx_http_compile_complex_value_t *ccv;
+	//the complex value is a pointer because channel ids can be inherited.
+} ngx_http_push_channel_id_t;
+
+typedef struct {
+	ngx_queue_t                     channel_id_sentinel;
 	ngx_int_t                       index;
 	time_t                          buffer_timeout;
 	ngx_int_t                       min_messages;

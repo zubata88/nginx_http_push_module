@@ -95,6 +95,7 @@ static void *		ngx_http_push_create_loc_conf(ngx_conf_t *cf) {
 	if(lcf == NULL) {
 		return NGX_CONF_ERROR;
 	}
+	ngx_queue_init(&lcf->channel_id_sentinel);
 	lcf->buffer_timeout=NGX_CONF_UNSET;
 	lcf->max_messages=NGX_CONF_UNSET;
 	lcf->min_messages=NGX_CONF_UNSET;
@@ -111,6 +112,20 @@ static void *		ngx_http_push_create_loc_conf(ngx_conf_t *cf) {
 
 static char *	ngx_http_push_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 	ngx_http_push_loc_conf_t       *prev = parent, *conf = child;
+	
+	//channel id inheritance stuff
+	if(!ngx_queue_empty(&prev->channel_id_sentinel)) {
+		ngx_http_push_channel_id_t *chan_id, *inherited_chan_id;
+		ngx_queue_t                *sentinel = &prev->channel_id_sentinel;
+		for(chan_id=(ngx_http_push_channel_id_t *)ngx_queue_head(sentinel); (ngx_queue_t *)chan_id!=sentinel; chan_id = (ngx_http_push_channel_id_t *)ngx_queue_next(&chan_id->queue)) {
+			if((inherited_chan_id = ngx_pcalloc(cf->pool, sizeof(*inherited_chan_id)))==NULL) {
+				return NGX_CONF_ERROR;
+			}
+			inherited_chan_id->ccv=chan_id->ccv;
+			ngx_queue_insert_tail(&conf->channel_id_sentinel, &inherited_chan_id->queue);
+		}
+	}
+
 	ngx_conf_merge_sec_value(conf->buffer_timeout, prev->buffer_timeout, NGX_HTTP_PUSH_DEFAULT_BUFFER_TIMEOUT);
 	ngx_conf_merge_value(conf->max_messages, prev->max_messages, NGX_HTTP_PUSH_DEFAULT_MAX_MESSAGES);
 	ngx_conf_merge_value(conf->min_messages, prev->min_messages, NGX_HTTP_PUSH_DEFAULT_MIN_MESSAGES);
@@ -133,17 +148,11 @@ static char *	ngx_http_push_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	return NGX_CONF_OK;
 }
 
-static ngx_str_t  ngx_http_push_channel_id = ngx_string("push_channel_id"); //channel id variable
 //publisher and subscriber handlers now.
 static char *ngx_http_push_setup_handler(ngx_conf_t *cf, void * conf, ngx_int_t (*handler)(ngx_http_request_t *)) {
 	ngx_http_core_loc_conf_t       *clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-	ngx_http_push_loc_conf_t       *plcf = conf;
 	clcf->handler = handler;
 	clcf->if_modified_since = NGX_HTTP_IMS_OFF;
-	plcf->index = ngx_http_get_variable_index(cf, &ngx_http_push_channel_id);
-	if (plcf->index == NGX_ERROR) {
-		return NGX_CONF_ERROR;
-	}
 	return NGX_CONF_OK;
 }
 
@@ -248,10 +257,52 @@ static char *ngx_http_push_set_message_buffer_length(ngx_conf_t *cf, ngx_command
 	return NGX_CONF_OK;
 }
 
+static char *ngx_http_push_set_channel_id(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+	ngx_http_push_loc_conf_t       *plcf = conf;
+    ngx_str_t                      *value;
+    ngx_http_compile_complex_value_t *ccv;
+	ngx_http_complex_value_t       *cv;
+	ngx_http_push_channel_id_t     *chan_id;
+	
+    value = cf->args->elts;
+	if((ccv = ngx_pcalloc(cf->pool, sizeof(*ccv)))==NULL) {
+		return NGX_CONF_ERROR;
+	}
+	if((chan_id = ngx_pcalloc(cf->pool, sizeof(*chan_id)))==NULL) {
+		ngx_pfree(cf->pool, ccv);
+		return NGX_CONF_ERROR;
+	}
+    chan_id->ccv=ccv;
+	ccv->cf = cf;
+    ccv->value = &value[1];
+    if((ccv->complex_value = ngx_pcalloc(cf->pool, sizeof(*cv)))==NULL) {
+		ngx_pfree(cf->pool, ccv);
+		ngx_pfree(cf->pool, chan_id);
+		return NGX_CONF_ERROR;
+	}
+
+    if (ngx_http_compile_complex_value(ccv) != NGX_OK) {
+        ngx_pfree(cf->pool, ccv->complex_value);
+		ngx_pfree(cf->pool, ccv);
+		ngx_pfree(cf->pool, chan_id);
+		return NGX_CONF_ERROR;
+    }
+
+	ngx_queue_insert_tail(&plcf->channel_id_sentinel, &chan_id->queue);
+	
+    return NGX_CONF_OK;
+}
 
 static ngx_command_t  ngx_http_push_commands[] = {
 
-    { ngx_string("push_message_timeout"),
+    { ngx_string("push_channel_id"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_push_set_channel_id,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+	{ ngx_string("push_message_timeout"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_sec_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -352,6 +403,10 @@ static ngx_command_t  ngx_http_push_commands[] = {
     ngx_null_command
 };
 
+static void ngx_http_push_exit_worker(ngx_cycle_t *cycle) {
+	ngx_reset_pool(ngx_http_push_pool);
+}
+
 static ngx_http_module_t  ngx_http_push_module_ctx = {
     NULL,                                  /* preconfiguration */
     ngx_http_push_postconfig,              /* postconfiguration */
@@ -373,7 +428,7 @@ ngx_module_t  ngx_http_push_module = {
     ngx_http_push_init_worker,             /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_http_push_exit_worker,             /* exit process */
     ngx_http_push_exit_master,             /* exit master */
     NGX_MODULE_V1_PADDING
 };

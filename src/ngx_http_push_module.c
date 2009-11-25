@@ -170,13 +170,49 @@ static ngx_http_push_msg_t * ngx_http_push_find_message_locked(ngx_http_push_cha
 
 #define NGX_HTTP_PUSH_NO_CHANNEL_ID_MESSAGE "No channel id provided."
 static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_push_loc_conf_t *cf) {
-	ngx_http_variable_value_t      *vv = ngx_http_get_indexed_variable(r, cf->index);
+	
 	ngx_str_t                      *group = &cf->channel_group;
 	size_t                          group_len = group->len;
-	size_t                          var_len;
-	size_t                          len;
-	ngx_str_t                      *id;
-    if (vv == NULL || vv->not_found || vv->len == 0) {
+	size_t                          partial_id_len, len;
+	ngx_str_t                      *id=NULL; //completed id
+	ngx_str_t                       partial_id = {0, NULL}; //generated id
+	
+	if(!ngx_queue_empty(&cf->channel_id_sentinel)) {
+		//pull the first complex valued channel id
+		ngx_http_complex_value_t       *complex_value = ((ngx_http_push_channel_id_t *)ngx_queue_head(&cf->channel_id_sentinel))->ccv->complex_value;
+		if (ngx_http_complex_value(r, complex_value, &partial_id) != NGX_OK) {
+			//nothing i think
+		}
+	}
+	
+	if(partial_id.data==NULL) {
+		//deprecated set $push_channel_id setting
+		static ngx_str_t           *channel_id_str = NULL;
+		static ngx_uint_t           key=0;
+		ngx_http_variable_value_t  *vv;
+		if (channel_id_str==NULL) { 
+			//laaaaaaame.
+			if((channel_id_str = ngx_palloc(ngx_http_push_pool, sizeof(*channel_id_str) + sizeof("push_channel_id")))!=NULL) {;
+				channel_id_str->len = sizeof("push_channel_id") -1;
+				channel_id_str->data = (u_char *)(channel_id_str + 1);
+				//hideous
+				ngx_memcpy(channel_id_str->data, (u_char *)"push_channel_id", channel_id_str->len);
+				key = ngx_hash_strlow(channel_id_str->data, channel_id_str->data, channel_id_str->len);
+			}
+			else {
+				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for $push_channel_id variable name.");
+			}
+		}
+		
+		vv = ngx_http_get_variable(r, channel_id_str, key, 1);
+		if(vv!=NULL && !vv->not_found && vv->len!=0) {
+			partial_id.len = vv->len;
+			partial_id.data =  vv->data;
+		}
+	}
+	
+    if (partial_id.data==NULL) {
+		//no id found. drat.
         ngx_buf_t *buf = ngx_create_temp_buf(r->pool, sizeof(NGX_HTTP_PUSH_NO_CHANNEL_ID_MESSAGE));
 		ngx_chain_t *chain;
 		if(buf==NULL) {
@@ -193,22 +229,22 @@ static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_
 		ngx_http_send_header(r);
 		ngx_http_output_filter(r, chain);
 		ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-            "push module: the $push_channel_id variable is required but is not set");
+            "push module: No channel id. Someone's being silly.");
 		return NULL;
     }
-	//maximum length limiter for channel id
-	var_len = vv->len <= cf->max_channel_id_length ? vv->len : cf->max_channel_id_length; 
-	len = group_len + 1 + var_len;
+	
+	partial_id_len = partial_id.len <= (size_t) cf->max_channel_id_length ? partial_id.len : (size_t) cf->max_channel_id_length; 
+	len = group_len + 1 + partial_id_len;
 	if((id = ngx_palloc(r->pool, sizeof(*id) + len))==NULL) {
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "push module: unable to allocate memory for $push_channel_id string");
+            "push module: unable to allocate memory for channel id string");
 		return NULL;
 	}
 	id->len=len;
 	id->data=(u_char *)(id+1);
 	ngx_memcpy(id->data, group->data, group_len);
 	id->data[group_len]='/';
-	ngx_memcpy(id->data + group_len + 1, vv->data, var_len);
+	ngx_memcpy(id->data + group_len + 1, partial_id.data, partial_id.len);
 	return id;
 }
 
