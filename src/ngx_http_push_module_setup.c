@@ -96,6 +96,8 @@ static void *		ngx_http_push_create_loc_conf(ngx_conf_t *cf) {
 		return NGX_CONF_ERROR;
 	}
 	ngx_queue_init(&lcf->channel_id_sentinel);
+	lcf->multiplex_channels=NGX_CONF_UNSET;
+	
 	lcf->buffer_timeout=NGX_CONF_UNSET;
 	lcf->max_messages=NGX_CONF_UNSET;
 	lcf->min_messages=NGX_CONF_UNSET;
@@ -125,7 +127,7 @@ static char *	ngx_http_push_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 			ngx_queue_insert_tail(&conf->channel_id_sentinel, &inherited_chan_id->queue);
 		}
 	}
-
+	ngx_conf_merge_value(conf->multiplex_channels, prev->multiplex_channels, 0);
 	ngx_conf_merge_sec_value(conf->buffer_timeout, prev->buffer_timeout, NGX_HTTP_PUSH_DEFAULT_BUFFER_TIMEOUT);
 	ngx_conf_merge_value(conf->max_messages, prev->max_messages, NGX_HTTP_PUSH_DEFAULT_MAX_MESSAGES);
 	ngx_conf_merge_value(conf->min_messages, prev->min_messages, NGX_HTTP_PUSH_DEFAULT_MIN_MESSAGES);
@@ -300,6 +302,13 @@ static ngx_command_t  ngx_http_push_commands[] = {
       ngx_http_push_set_channel_id,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
+      NULL },
+
+	{ ngx_string("push_multiplex_channels"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_push_loc_conf_t, multiplex_channels),
       NULL },
 
 	{ ngx_string("push_message_timeout"),
