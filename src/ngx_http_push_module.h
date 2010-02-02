@@ -56,8 +56,15 @@ typedef struct {
 } ngx_http_push_channel_id_t;
 
 typedef struct {
+	ngx_http_request_t             *request;
+	ngx_http_request_t            **next;
+} ngx_http_request_list_t;
+
+typedef struct {
 	//channel id stuff
 	ngx_queue_t                     channel_id_sentinel;
+	ngx_int_t                       channel_id_count;
+	void                           *channel_scratch;
 	ngx_int_t                       multiplex_channels;
 	ngx_int_t                       max_channel_id_length;
 	ngx_str_t                       channel_group;
@@ -90,6 +97,12 @@ typedef struct {
 
 typedef struct ngx_http_push_subscriber_cleanup_s ngx_http_push_subscriber_cleanup_t;
 
+typedef struct {
+	ngx_http_push_channel_t        *channel;
+	ngx_http_push_msg_t            *msg;
+	ngx_int_t                       msg_search_outcome;
+} ngx_http_push_channel_scratch_t;
+
 //subscriber request queue
 typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
@@ -115,10 +128,16 @@ typedef struct {
 	time_t                          last_seen;
 } ngx_http_push_channel_t; 
 
+typedef struct {
+	ngx_http_push_channel_t        *channel;
+	ngx_http_push_channel_t       **next;
+} ngx_http_push_channel_list_t;
+
 //cleaning supplies
 struct ngx_http_push_subscriber_cleanup_s {
-	ngx_http_push_subscriber_t       *subscriber;
+	ngx_http_push_subscriber_t     *subscriber;
 	ngx_http_push_channel_t        *channel;
+	ngx_http_push_subscriber_cleanup_t *next;
 };
 
 //garbage collecting goodness

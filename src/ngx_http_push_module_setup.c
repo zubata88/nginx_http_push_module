@@ -97,7 +97,7 @@ static void *		ngx_http_push_create_loc_conf(ngx_conf_t *cf) {
 	}
 	ngx_queue_init(&lcf->channel_id_sentinel);
 	lcf->multiplex_channels=NGX_CONF_UNSET;
-	
+	lcf->channel_id_count=0;
 	lcf->buffer_timeout=NGX_CONF_UNSET;
 	lcf->max_messages=NGX_CONF_UNSET;
 	lcf->min_messages=NGX_CONF_UNSET;
@@ -125,6 +125,7 @@ static char *	ngx_http_push_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 			}
 			inherited_chan_id->ccv=chan_id->ccv;
 			ngx_queue_insert_tail(&conf->channel_id_sentinel, &inherited_chan_id->queue);
+			conf->channel_id_count++;
 		}
 	}
 	ngx_conf_merge_value(conf->multiplex_channels, prev->multiplex_channels, 0);
@@ -291,7 +292,7 @@ static char *ngx_http_push_set_channel_id(ngx_conf_t *cf, ngx_command_t *cmd, vo
     }
 
 	ngx_queue_insert_tail(&plcf->channel_id_sentinel, &chan_id->queue);
-	
+	plcf->channel_id_count++;
     return NGX_CONF_OK;
 }
 
