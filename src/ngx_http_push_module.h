@@ -71,7 +71,7 @@ typedef struct {
 	//message stuff
 	ngx_int_t                       store_messages;
 	time_t                          buffer_timeout;
-	ngx_int_t                       min_message_recipients;
+	ngx_int_t                       delete_oldest_received_message;
 	ngx_int_t                       min_messages;
 	ngx_int_t                       max_messages;
 	//subscriber stuff
@@ -89,7 +89,7 @@ typedef struct {
 //	ngx_str_t                       charset;
 	ngx_buf_t                      *buf;
 	time_t                          expires;
-	ngx_uint_t                      received;
+	ngx_uint_t                      delete_oldest_received_min_messages; //NGX_MAX_UINT32_VALUE for 'never'
 	time_t                          message_time; //tag message by time
 	ngx_int_t                       message_tag;  //used in conjunction with message_time if more than one message have the same time.
 	ngx_int_t                       refcount;
@@ -175,6 +175,8 @@ void * ngx_http_push_slab_alloc_locked(size_t size);
 //channel messages
 static ngx_http_push_msg_t *ngx_http_push_get_latest_message_locked(ngx_http_push_channel_t * channel);
 static ngx_http_push_msg_t *ngx_http_push_get_oldest_message_locked(ngx_http_push_channel_t * channel);
+static void ngx_http_push_reserve_message_locked(ngx_http_push_channel_t *channel, ngx_http_push_msg_t *msg);
+static void ngx_http_push_release_message_locked(ngx_http_push_channel_t *channel, ngx_http_push_msg_t *msg);
 static ngx_inline void ngx_http_push_general_delete_message_locked(ngx_http_push_channel_t *channel, ngx_http_push_msg_t *msg, ngx_int_t force, ngx_slab_pool_t *shpool);
 #define ngx_http_push_delete_message_locked(channel, msg, shpool) ngx_http_push_general_delete_message_locked(channel, msg, 0, shpool)
 #define ngx_http_push_force_delete_message_locked(channel, msg, shpool) ngx_http_push_general_delete_message_locked(channel, msg, 1, shpool)

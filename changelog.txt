@@ -1,4 +1,11 @@
- feature: push_channel_id is now a directive. using `$set push_channel_id` has been deprecated.
+0.692 (Feb. 3 2010)
+ fix: error log reported failed close() for some publisher requests with large messages
+ fix: occasional memory leak during message deletion
+ fix: worker messages intended for dead worker processes were not deleted
+0.691 (Feb. 2 2010)
+ fix: server reload (via SIGHUP signal) was failing
+ fix: segfault on messages longer than client_body_buffer_size (thanks wfelipe)
+ change: removed push_min_message_recipients, added push_delete_oldest_received_message
 0.69 (Nov. 17 2009)
  fix: publisher got a 201 Created response even if the channel had no subscribers at the time (should be 202 Accepted)
  fix: small memory leak after each message broadcast to a channel
