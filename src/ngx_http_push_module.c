@@ -307,21 +307,27 @@ static ngx_http_push_channel_scratch_t *ngx_http_init_channel_scratch(ngx_http_p
 static ngx_int_t ngx_http_push_handle_subscriber_channel(ngx_http_request_t *r, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_t *channel, ngx_http_push_channel_scratch_t *scratch) {
 	//get the channel and check channel authorization while we're at it.
 	
+	scratch->channel = channel;
 	if (channel==NULL) {
 		//unable to allocate channel OR channel not found
-		ngx_shmtx_unlock(&shpool->mutex);
+		scratch->msg=NULL;
+		scratch->msg_search_outcome = NGX_HTTP_PUSH_MESSAGE_NOT_FOUND;
+		
 		if(cf->authorize_channel) {
 			return NGX_HTTP_FORBIDDEN;
 		}
 		else {
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate shared memory for channel");
-			return NGX_HTTP_INTERNAL_SERVER_ERROR;
+			return NGX_ERROR;
 		}
 	}
+	
+	ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
 	msg = ngx_http_push_find_message_locked(channel, r, &msg_search_outcome); 
 	channel->last_seen = ngx_time();
-	ngx_shmtx_unlock(&shpool->mutex);
-
+	ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
+	scratch->msg_search_outcome = msg_search_outcome;
+	
 	switch(ngx_http_push_handle_subscriber_concurrency(r, channel, cf)) {
 		case NGX_DECLINED: //this request was declined for some reason.
 			//status codes and whatnot should have already been written. just get out of here quickly.
@@ -330,13 +336,61 @@ static ngx_int_t ngx_http_push_handle_subscriber_channel(ngx_http_request_t *r, 
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: error handling subscriber concurrency setting");
 			return NGX_ERROR;
 	}
-
-	switch(msg_search_outcome) {
+	return NGX_OK;
+}
+	
+static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
+	static ngx_http_push_channel_scratch_t null_scratch = {NULL, NULL, NGX_HTTP_PUSH_MESSAGE_NOT_FOUND, NGX_ERROR};
+	
+	ngx_http_push_loc_conf_t       *cf = ngx_http_get_module_loc_conf(r, ngx_http_push_module);
+	ngx_http_push_channel_scratch_t *scratch, *scratch_sentinel *scratch_chosen = &null_scratch;
+	ngx_http_push_channel_id_t     *next_channel_id=NULL;
+	
+	if (r->method != NGX_HTTP_GET) {
+		ngx_http_push_add_response_header(r, &NGX_HTTP_PUSH_HEADER_ALLOW, &NGX_HTTP_PUSH_ALLOW_GET); //valid HTTP for teh win
+		return NGX_HTTP_NOT_ALLOWED;
+	}
+	
+	//multiplexing logic
+	if ((scratch_sentinel = ngx_http_init_channel_scratch(cf))==NULL) {
+		//unable to allocate scratch space
+		return NGX_HTTP_INTERNAL_SERVER_ERROR;
+	}
+	do {
+		ngx_http_push_channel_t    *channel;
+		ngx_str_t                  *id;
+		//The Great Loop Of Multiplexing
+		if((id=ngx_http_push_get_channel_id(r, cf, &next_channel_id))!=NULL) {
+			ngx_shmtx_lock(&ngx_http_push_spool->mutex);
+			channel = (cf->authorize_channel==1 ? ngx_http_push_find_channel : ngx_http_push_get_channel)(id, r->connection->log);
+			ngx_shmtx_unlock(&ngx_http_push_spool->mutex);
+			scratch->response_code = ngx_http_push_handle_subscriber_channel(channel, cf, scratch);
+			
+			if(scratch->msg_search_outcome < scratch_chosen->msg_search_outcome) {
+				scratch_chosen = scratch;
+			}
+			else if(scratch->msg_search_outcome == scratch_chosen->msg_search_outcome) {
+				if(scratch->msg_search_outcome == NGX_HTTP_PUSH_MESSAGE_FOUND) {
+					ngx_http_push_msg_t *msg_found = scratch->msg, *msg_chosen = scratch_chosen->msg;
+					if(msg_found->message_time < msg_chosen->message_time ||
+					  (msg_found->message_time == msg_chosen->message_time && msg_found->message_tag < msg_chosen->message_tag)) { //assumes unique message_tags per second
+						scratch_chosen = scratch;
+					}
+				}
+			}
+			scratch++;
+		}
+		
+	} while(next_channel_id!=NULL);
+	
+	channel = scratch_chosen->channel;
+	
+	switch(scratch_chosen->msg_search_outcome) {
 		//for message-found:
 		ngx_chain_t                *chain;
 		time_t                      last_modified;
 		size_t                      content_type_len;
-
+		 
 		case NGX_HTTP_PUSH_MESSAGE_EXPECTED:
 			// ♫ It's gonna be the future soon ♫
 			switch(cf->subscriber_poll_mechanism) {
@@ -495,49 +549,6 @@ static ngx_int_t ngx_http_push_handle_subscriber_channel(ngx_http_request_t *r, 
 		default: //we shouldn't be here.
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	}
-
-
-}
-	
-static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
-	ngx_http_push_loc_conf_t       *cf = ngx_http_get_module_loc_conf(r, ngx_http_push_module);
-	ngx_str_t                      *id;
-	ngx_http_push_channel_t        *channel;
-	ngx_http_push_msg_t            *msg;
-	ngx_int_t                       msg_search_outcome;
-	ngx_http_push_channel_scratch_t *scratch;
-	ngx_str_t                      *content_type=NULL;
-	ngx_str_t                      *etag;
-	
-	ngx_http_push_channel_id_t     *next_channel_id=NULL;
-	
-	if (r->method != NGX_HTTP_GET) {
-		ngx_http_push_add_response_header(r, &NGX_HTTP_PUSH_HEADER_ALLOW, &NGX_HTTP_PUSH_ALLOW_GET); //valid HTTP for teh win
-		return NGX_HTTP_NOT_ALLOWED;
-	}
-	
-	if ((scratch = ngx_http_init_channel_scratch(cf))==NULL) {
-		//unable to allocate scratch space
-		return NGX_HTTP_INTERNAL_SERVER_ERROR;
-	}
-	
-	do {
-		//The Great Loop Of Multiplexing
-		if((id=ngx_http_push_get_channel_id(r, cf, &next_channel_id))!=NULL) {
-			ngx_shmtx_lock(&ngx_http_push_spool->mutex);
-			channel = (cf->authorize_channel==1 ? ngx_http_push_find_channel : ngx_http_push_get_channel)(id, r->connection->log);
-			ngx_shmtx_unlock(&ngx_http_push_spool->mutex);
-			if(channel!=NULL) {
-				ngx_http_push_handle_subscriber_channel(channel, cf, scratch);
-				
-				//message found logic
-				
-				scratch++;
-			}
-			
-		}
-		
-	} while(next_channel_id!=NULL);
 	
 	
 }

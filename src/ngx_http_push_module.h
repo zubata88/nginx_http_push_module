@@ -43,6 +43,7 @@
 #define NGX_HTTP_PUSH_MESSAGE_FOUND     1000 
 #define NGX_HTTP_PUSH_MESSAGE_EXPECTED  1001
 #define NGX_HTTP_PUSH_MESSAGE_EXPIRED   1002
+#define NGX_HTTP_PUSH_MESSAGE_NOT_FOUND 1404
 
 //on with the declarations
 typedef struct {
@@ -101,6 +102,7 @@ typedef struct {
 	ngx_http_push_channel_t        *channel;
 	ngx_http_push_msg_t            *msg;
 	ngx_int_t                       msg_search_outcome;
+	ngx_int_t                       response_code;
 } ngx_http_push_channel_scratch_t;
 
 //subscriber request queue
