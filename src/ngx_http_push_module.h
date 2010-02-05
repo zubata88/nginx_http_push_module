@@ -36,14 +36,17 @@
 #define NGX_HTTP_ACCEPTED 202
 #endif
 
+#define NGX_TAG_ALL_CHANNELS            -1
 
-#define NGX_HTTP_PUSH_MESSAGE_RECEIVED 9000
-#define NGX_HTTP_PUSH_MESSAGE_QUEUED   9001
+#define NGX_HTTP_PUSH_MESSAGE_RECEIVED  9000
+#define NGX_HTTP_PUSH_MESSAGE_QUEUED    9001
 
 #define NGX_HTTP_PUSH_MESSAGE_FOUND     1000 
 #define NGX_HTTP_PUSH_MESSAGE_EXPECTED  1001
 #define NGX_HTTP_PUSH_MESSAGE_EXPIRED   1002
 #define NGX_HTTP_PUSH_MESSAGE_NOT_FOUND 1404
+
+#define NGX_HTTP_PUSH_MESSAGE_TAG_SIZE  (NGX_INT_T_LEN *2 + 3) //|%ui:%ui
 
 //on with the declarations
 typedef struct {
@@ -109,6 +112,8 @@ typedef struct {
 typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
 	ngx_http_request_t             *request;
+	time_t                          message_time; //multiplexing data
+	ngx_str_t                      *message_tag;  //multiplexing data
 	ngx_http_push_subscriber_cleanup_t *clndata; 
 } ngx_http_push_subscriber_t;
 

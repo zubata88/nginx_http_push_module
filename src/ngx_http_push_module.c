@@ -281,12 +281,26 @@ static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_
 	return id;
 }
 
-#define NGX_HTTP_PUSH_MAKE_ETAG(message_tag, etag, alloc_func, pool)                 \
-    etag = alloc_func(pool, sizeof(*etag) + NGX_INT_T_LEN);                          \
-    if(etag!=NULL) {                                                                 \
-        etag->data = (u_char *)(etag+1);                                             \
-        etag->len = ngx_sprintf(etag->data,"%ui", message_tag)- etag->data;          \
-    }
+#define ngx_http_push_get_etag_length(cf)                               \
+	(NGX_HTTP_PUSH_MESSAGE_TAG_SIZE * (cf->multiplex_channels ? 1 : cf->channel_id_count) + 2)
+
+
+static ngx_int_t ngx_http_push_set_etag(ngx_str_t *etag, ngx_time_t basetime, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_scratch_t scratch[], ngx_int_t finish_later_channel_number) {
+	ngx_int_t                       channels = cf->multiplex_channels ? 1 : cf->channel_id_count;
+	ngx_int_t                       i, etag_len = 0;
+	u_char                          *where = etag->data;
+	for(i=0; i<channels; i++) {
+		if(finish_later_channel_number != i) {
+			etag_len += ngx_sprintf(where+etag_len, "|%ui:%ui", scratch[i].msg->message_time - basetime, scratch[i].msg->message_tag)
+		}
+		else {
+			ngx_memcpy(where+etag_len, "|%ui:%ui", 8);
+			etag_len += 8;
+		}
+	}
+	etag->len = etag_len;
+	return NGX_OK;
+}
 
 #define NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, pool)  \
     if(((content_type) = ngx_palloc(pool, sizeof(*content_type)+content_type_len))!=NULL) { \
@@ -343,7 +357,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 	static ngx_http_push_channel_scratch_t null_scratch = {NULL, NULL, NGX_HTTP_PUSH_MESSAGE_NOT_FOUND, NGX_ERROR};
 	
 	ngx_http_push_loc_conf_t       *cf = ngx_http_get_module_loc_conf(r, ngx_http_push_module);
-	ngx_http_push_channel_scratch_t *scratch, *scratch_sentinel *scratch_chosen = &null_scratch;
+	ngx_http_push_channel_scratch_t *scratch_cur, *scratch, *scratch_chosen = &null_scratch;
 	ngx_http_push_channel_id_t     *next_channel_id=NULL;
 	
 	if (r->method != NGX_HTTP_GET) {
@@ -352,7 +366,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 	}
 	
 	//multiplexing logic
-	if ((scratch_sentinel = ngx_http_init_channel_scratch(cf))==NULL) {
+	if ((scratch = ngx_http_init_channel_scratch(cf))==NULL) {
 		//unable to allocate scratch space
 		return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	}
@@ -364,21 +378,21 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 			ngx_shmtx_lock(&ngx_http_push_spool->mutex);
 			channel = (cf->authorize_channel==1 ? ngx_http_push_find_channel : ngx_http_push_get_channel)(id, r->connection->log);
 			ngx_shmtx_unlock(&ngx_http_push_spool->mutex);
-			scratch->response_code = ngx_http_push_handle_subscriber_channel(channel, cf, scratch);
+			scratch_cur->response_code = ngx_http_push_handle_subscriber_channel(channel, cf, scratch_cur);
 			
-			if(scratch->msg_search_outcome < scratch_chosen->msg_search_outcome) {
-				scratch_chosen = scratch;
+			if(scratch_cur->msg_search_outcome < scratch_chosen->msg_search_outcome) {
+				scratch_chosen = scratch_cur;
 			}
-			else if(scratch->msg_search_outcome == scratch_chosen->msg_search_outcome) {
-				if(scratch->msg_search_outcome == NGX_HTTP_PUSH_MESSAGE_FOUND) {
-					ngx_http_push_msg_t *msg_found = scratch->msg, *msg_chosen = scratch_chosen->msg;
+			else if(scratch_cur->msg_search_outcome == scratch_chosen->msg_search_outcome) {
+				if(scratch_cur->msg_search_outcome == NGX_HTTP_PUSH_MESSAGE_FOUND) {
+					ngx_http_push_msg_t *msg_found = scratch_cur->msg, *msg_chosen = scratch_chosen->msg;
 					if(msg_found->message_time < msg_chosen->message_time ||
 					  (msg_found->message_time == msg_chosen->message_time && msg_found->message_tag < msg_chosen->message_tag)) { //assumes unique message_tags per second
-						scratch_chosen = scratch;
+						scratch_chosen = scratch_cur;
 					}
 				}
 			}
-			scratch++;
+			scratch_cur++;
 		}
 		
 	} while(next_channel_id!=NULL);
@@ -497,13 +511,14 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 			//found the message
 			ngx_shmtx_lock(&shpool->mutex);
 			ngx_http_push_reserve_message_locked(channel, msg);
-			NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_palloc, r->pool);
-			if(etag==NULL) {
+			
+			if((etag = ngx_pcalloc(sizeof(etag) + ngx_http_push_get_etag_length(cf), r->pool))==NULL) {
 				//oh, nevermind...
 				ngx_shmtx_unlock(&shpool->mutex);
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for Etag header");
 				return NGX_ERROR;
 			}
+			ngx_http_push_set_etag(etag, basetime, cf, scratch, NGX_TAG_ALL_CHANNELS);
 			
 			content_type_len = msg->content_type.len;
 			if(content_type_len>0) {
