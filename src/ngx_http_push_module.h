@@ -113,7 +113,7 @@ typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
 	ngx_http_request_t             *request;
 	time_t                          message_time; //multiplexing data
-	ngx_str_t                      *message_tag;  //multiplexing data
+	ngx_str_t                       message_tag;  //multiplexing data
 	ngx_http_push_subscriber_cleanup_t *clndata; 
 } ngx_http_push_subscriber_t;
 

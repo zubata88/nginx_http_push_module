@@ -359,6 +359,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 	ngx_http_push_loc_conf_t       *cf = ngx_http_get_module_loc_conf(r, ngx_http_push_module);
 	ngx_http_push_channel_scratch_t *scratch_cur, *scratch, *scratch_chosen = &null_scratch;
 	ngx_http_push_channel_id_t     *next_channel_id=NULL;
+	ngx_int_t                       num_channels = 0;
 	
 	if (r->method != NGX_HTTP_GET) {
 		ngx_http_push_add_response_header(r, &NGX_HTTP_PUSH_HEADER_ALLOW, &NGX_HTTP_PUSH_ALLOW_GET); //valid HTTP for teh win
@@ -393,6 +394,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				}
 			}
 			scratch_cur++;
+			num_channels++;
 		}
 		
 	} while(next_channel_id!=NULL);
@@ -412,7 +414,9 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				ngx_http_push_pid_queue_t  *sentinel, *cur, *found;
 				ngx_http_push_subscriber_t *subscriber;
 				ngx_http_push_subscriber_t *subscriber_sentinel;
-				
+				ngx_int_t                   i;
+				size_t                      max_etag_size;
+				ngx_time_t                  basetime = scratch_chosen->msg.message_time;
 				case NGX_HTTP_PUSH_MECHANISM_LONGPOLL:
 					//long-polling subscriber. wait for a message.
 					
@@ -422,7 +426,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 					cur = (ngx_http_push_pid_queue_t *)ngx_queue_head(&sentinel->queue);
 					found = NULL;
 					
-					ngx_http_push_subscriber_cleanup_t *clndata;
+					ngx_http_push_subscriber_cleanup_t *clndata, *clndata_prev;
 					ngx_pool_cleanup_t             *cln;
 					while(cur!=sentinel) {
 						if(cur->pid==ngx_pid) {
@@ -445,21 +449,51 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 					}
 					ngx_shmtx_unlock(&shpool->mutex);
 					
-					if((subscriber = ngx_palloc(ngx_http_push_pool, sizeof(*subscriber)))==NULL) { //unable to allocate request queue element
-						return NGX_ERROR;
-					}
-					
-					 //attach a cleaner to remove the request from the channel.
-					if ((cln=ngx_pool_cleanup_add(r->pool, sizeof(*clndata))) == NULL) { //make sure we can.
+					//cleanup initialization
+					if ((cln=ngx_pool_cleanup_add(r->pool, 0)) == NULL) { //zero data 'cause we'll add it later.
+						ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for channel cleanup");
 						return NGX_ERROR;
 					}
 					cln->handler = (ngx_pool_cleanup_pt) ngx_http_push_subscriber_cleanup;
-					clndata = (ngx_http_push_subscriber_cleanup_t *) cln->data;
-					clndata->channel=channel;
-					clndata->subscriber=subscriber;
-					clndata->next=NULL;
 					
-					subscriber->request = r;
+					max_etag_size = ngx_http_push_get_etag_length(cf);
+					
+					clndata_prev = NULL;
+					for(i=0; i < num_channels; i++) {
+						if(scratch[i].msg_search_outcome==NGX_HTTP_PUSH_MESSAGE_EXPECTED) {
+							if((subscriber = ngx_palloc(ngx_http_push_pool, sizeof(*subscriber) + max_etag_size))==NULL) { //unable to allocate request queue element
+								ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate request queue element");
+								return NGX_ERROR;
+							}
+							subscriber->request = r;
+							subscriber->message_time = basetime;
+							subscriber->message_tag.data = subscriber+1;
+							ngx_http_push_set_etag(&subscriber->message_tag, basetime, cf, scratch, i);
+							
+							//wait on this channel
+							if((clndata = ngx_palloc(r->pool, sizeof(*clndata))) == NULL) {
+								ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate request cleaning data");
+								return NGX_ERROR;
+							}
+							subscriber->clndata = clndata;
+							clndata->channel=channel;
+							clndata->subscriber=subscriber;
+							
+							
+							//KEEP GOING!
+							
+							if(clndata_prev==NULL) {
+								clndata_first = clndata;
+							}
+							else {
+								clndata_prev->next = clndata;
+							}
+							clndata_prev = clndata;
+						}
+					}
+					clndata->next = clndata_first; //loop it up!
+					cln->data = clndata;
+					
 					subscriber->clndata=clndata;
 					
 					ngx_shmtx_lock(&shpool->mutex);
@@ -512,7 +546,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 			ngx_shmtx_lock(&shpool->mutex);
 			ngx_http_push_reserve_message_locked(channel, msg);
 			
-			if((etag = ngx_pcalloc(sizeof(etag) + ngx_http_push_get_etag_length(cf), r->pool))==NULL) {
+			if((etag = ngx_pcalloc(sizeof(*etag) + ngx_http_push_get_etag_length(cf), r->pool))==NULL) {
 				//oh, nevermind...
 				ngx_shmtx_unlock(&shpool->mutex);
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for Etag header");
