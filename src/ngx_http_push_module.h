@@ -101,13 +101,6 @@ typedef struct {
 
 typedef struct ngx_http_push_subscriber_cleanup_s ngx_http_push_subscriber_cleanup_t;
 
-typedef struct {
-	ngx_http_push_channel_t        *channel;
-	ngx_http_push_msg_t            *msg;
-	ngx_int_t                       msg_search_outcome;
-	ngx_int_t                       response_code;
-} ngx_http_push_channel_scratch_t;
-
 //subscriber request queue
 typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
@@ -146,6 +139,13 @@ struct ngx_http_push_subscriber_cleanup_s {
 	ngx_http_push_channel_t        *channel;
 	ngx_http_push_subscriber_cleanup_t *next;
 };
+
+typedef struct {
+	ngx_http_push_channel_t        *channel;
+	ngx_http_push_msg_t            *msg;
+	ngx_int_t                       msg_search_outcome;
+	ngx_int_t                       response_code;
+} ngx_http_push_channel_scratch_t;
 
 //garbage collecting goodness
 typedef struct {

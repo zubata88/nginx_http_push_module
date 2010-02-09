@@ -240,10 +240,6 @@ static void ngx_http_push_exit_master(ngx_cycle_t *cycle) {
 	ngx_http_push_walk_rbtree(ngx_http_push_movezig_channel_locked);
 }
 
-static void ngx_http_push_exit_worker(ngx_cycle_t *cycle) {
-	ngx_http_push_ipc_exit_worker(cycle);
-}
-
 static char *ngx_http_push_set_message_buffer_length(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 	char                           *p = conf;
 	ngx_int_t                      *min, *max;
@@ -418,6 +414,7 @@ static ngx_command_t  ngx_http_push_commands[] = {
 };
 
 static void ngx_http_push_exit_worker(ngx_cycle_t *cycle) {
+	ngx_http_push_ipc_exit_worker(cycle);
 	ngx_reset_pool(ngx_http_push_pool);
 }
 

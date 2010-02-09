@@ -285,20 +285,20 @@ static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_
 	(NGX_HTTP_PUSH_MESSAGE_TAG_SIZE * (cf->multiplex_channels ? 1 : cf->channel_id_count) + 2)
 
 
-static ngx_int_t ngx_http_push_set_etag(ngx_str_t *etag, ngx_time_t basetime, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_scratch_t scratch[], ngx_int_t finish_later_channel_number) {
+static ngx_int_t ngx_http_push_set_etag(ngx_str_t *etag, time_t basetime, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_scratch_t scratch[], ngx_int_t finish_later_channel_number) {
 	ngx_int_t                       channels = cf->multiplex_channels ? 1 : cf->channel_id_count;
-	ngx_int_t                       i, etag_len = 0;
-	u_char                          *where = etag->data;
+	ngx_int_t                       i;
+	u_char                          *cur = etag->data;
 	for(i=0; i<channels; i++) {
 		if(finish_later_channel_number != i) {
-			etag_len += ngx_sprintf(where+etag_len, "|%ui:%ui", scratch[i].msg->message_time - basetime, scratch[i].msg->message_tag)
+			cur = ngx_sprintf(cur, "|%ui:%ui", scratch[i].msg->message_time - basetime, scratch[i].msg->message_tag);
 		}
 		else {
-			ngx_memcpy(where+etag_len, "|%ui:%ui", 8);
-			etag_len += 8;
+			ngx_memcpy(cur, "|%ui:%ui", 8);
+			cur+= 8;
 		}
 	}
-	etag->len = etag_len;
+	etag->len = cur - etag->data;
 	return NGX_OK;
 }
 
@@ -320,6 +320,7 @@ static ngx_http_push_channel_scratch_t *ngx_http_init_channel_scratch(ngx_http_p
 	
 static ngx_int_t ngx_http_push_handle_subscriber_channel(ngx_http_request_t *r, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_t *channel, ngx_http_push_channel_scratch_t *scratch) {
 	//get the channel and check channel authorization while we're at it.
+	ngx_http_push_msg_t            *msg;
 	
 	scratch->channel = channel;
 	if (channel==NULL) {
@@ -337,10 +338,9 @@ static ngx_int_t ngx_http_push_handle_subscriber_channel(ngx_http_request_t *r, 
 	}
 	
 	ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
-	msg = ngx_http_push_find_message_locked(channel, r, &msg_search_outcome); 
+	msg = ngx_http_push_find_message_locked(channel, r, &scratch->msg_search_outcome); 
 	channel->last_seen = ngx_time();
 	ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
-	scratch->msg_search_outcome = msg_search_outcome;
 	
 	switch(ngx_http_push_handle_subscriber_concurrency(r, channel, cf)) {
 		case NGX_DECLINED: //this request was declined for some reason.
@@ -360,6 +360,8 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 	ngx_http_push_channel_scratch_t *scratch_cur, *scratch, *scratch_chosen = &null_scratch;
 	ngx_http_push_channel_id_t     *next_channel_id=NULL;
 	ngx_int_t                       num_channels = 0;
+	ngx_http_push_channel_t        *channel;
+	ngx_http_push_msg_t            *msg;
 	
 	if (r->method != NGX_HTTP_GET) {
 		ngx_http_push_add_response_header(r, &NGX_HTTP_PUSH_HEADER_ALLOW, &NGX_HTTP_PUSH_ALLOW_GET); //valid HTTP for teh win
@@ -372,14 +374,13 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 		return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	}
 	do {
-		ngx_http_push_channel_t    *channel;
 		ngx_str_t                  *id;
 		//The Great Loop Of Multiplexing
 		if((id=ngx_http_push_get_channel_id(r, cf, &next_channel_id))!=NULL) {
-			ngx_shmtx_lock(&ngx_http_push_spool->mutex);
+			ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
 			channel = (cf->authorize_channel==1 ? ngx_http_push_find_channel : ngx_http_push_get_channel)(id, r->connection->log);
-			ngx_shmtx_unlock(&ngx_http_push_spool->mutex);
-			scratch_cur->response_code = ngx_http_push_handle_subscriber_channel(channel, cf, scratch_cur);
+			ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
+			scratch_cur->response_code = ngx_http_push_handle_subscriber_channel(r, cf, channel, scratch_cur);
 			
 			if(scratch_cur->msg_search_outcome < scratch_chosen->msg_search_outcome) {
 				scratch_chosen = scratch_cur;
@@ -400,13 +401,17 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 	} while(next_channel_id!=NULL);
 	
 	channel = scratch_chosen->channel;
+	msg = scratch_chosen->msg;
 	
 	switch(scratch_chosen->msg_search_outcome) {
 		//for message-found:
 		ngx_chain_t                *chain;
 		time_t                      last_modified;
 		size_t                      content_type_len;
-		 
+		ngx_str_t                  *etag, *content_type;
+		size_t                      max_etag_size;
+		time_t                      basetime = scratch_chosen->msg->message_time;
+		
 		case NGX_HTTP_PUSH_MESSAGE_EXPECTED:
 			// ♫ It's gonna be the future soon ♫
 			switch(cf->subscriber_poll_mechanism) {
@@ -415,39 +420,12 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				ngx_http_push_subscriber_t *subscriber;
 				ngx_http_push_subscriber_t *subscriber_sentinel;
 				ngx_int_t                   i;
-				size_t                      max_etag_size;
-				ngx_time_t                  basetime = scratch_chosen->msg.message_time;
+				ngx_pool_cleanup_t         *cln;
+				ngx_http_push_subscriber_cleanup_t *clndata, *clndata_prev, *clndata_first;
+				
+				
 				case NGX_HTTP_PUSH_MECHANISM_LONGPOLL:
 					//long-polling subscriber. wait for a message.
-					
-					//subscribers are queued up in a local pool. Queue sentinels are separate and also local, but not in the pool.
-					ngx_shmtx_lock(&shpool->mutex);
-					sentinel = &channel->workers_with_subscribers;
-					cur = (ngx_http_push_pid_queue_t *)ngx_queue_head(&sentinel->queue);
-					found = NULL;
-					
-					ngx_http_push_subscriber_cleanup_t *clndata, *clndata_prev;
-					ngx_pool_cleanup_t             *cln;
-					while(cur!=sentinel) {
-						if(cur->pid==ngx_pid) {
-							found = cur;
-							break;
-						}
-						cur = (ngx_http_push_pid_queue_t *)ngx_queue_next(&cur->queue);
-					}
-					if(found == NULL) { //found nothing
-						if((found=ngx_http_push_slab_alloc_locked(sizeof(*found)))==NULL) {
-							ngx_shmtx_unlock(&shpool->mutex);
-							ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate worker subscriber queue marker in shared memory");
-							return NGX_HTTP_INTERNAL_SERVER_ERROR;
-						}
-						//initialize
-						ngx_queue_insert_tail(&sentinel->queue, &found->queue);
-						found->pid=ngx_pid;
-						found->slot=ngx_process_slot;
-						found->subscriber_sentinel=NULL;
-					}
-					ngx_shmtx_unlock(&shpool->mutex);
 					
 					//cleanup initialization
 					if ((cln=ngx_pool_cleanup_add(r->pool, 0)) == NULL) { //zero data 'cause we'll add it later.
@@ -461,13 +439,14 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 					clndata_prev = NULL;
 					for(i=0; i < num_channels; i++) {
 						if(scratch[i].msg_search_outcome==NGX_HTTP_PUSH_MESSAGE_EXPECTED) {
+							channel = scratch[i].channel;
 							if((subscriber = ngx_palloc(ngx_http_push_pool, sizeof(*subscriber) + max_etag_size))==NULL) { //unable to allocate request queue element
 								ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate request queue element");
 								return NGX_ERROR;
 							}
 							subscriber->request = r;
 							subscriber->message_time = basetime;
-							subscriber->message_tag.data = subscriber+1;
+							subscriber->message_tag.data = (u_char *)(subscriber+1);
 							ngx_http_push_set_etag(&subscriber->message_tag, basetime, cf, scratch, i);
 							
 							//wait on this channel
@@ -480,7 +459,52 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 							clndata->subscriber=subscriber;
 							
 							
-							//KEEP GOING!
+							//subscribers are queued up in a local pool. Queue sentinels are separate and also local, but not in the pool.
+							ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
+							sentinel = &channel->workers_with_subscribers;
+							cur = (ngx_http_push_pid_queue_t *)ngx_queue_head(&sentinel->queue);
+							found = NULL;
+							
+							while(cur!=sentinel) {
+								if(cur->pid==ngx_pid) {
+									found = cur;
+									break;
+								}
+								cur = (ngx_http_push_pid_queue_t *)ngx_queue_next(&cur->queue);
+							}
+							if(found == NULL) { //found nothing
+								if((found=ngx_http_push_slab_alloc_locked(sizeof(*found)))==NULL) {
+									ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
+									ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate worker subscriber queue marker in shared memory");
+									return NGX_HTTP_INTERNAL_SERVER_ERROR;
+								}
+								//initialize
+								ngx_queue_insert_tail(&sentinel->queue, &found->queue);
+								found->pid=ngx_pid;
+								found->slot=ngx_process_slot;
+								found->subscriber_sentinel=NULL;
+							}
+							
+							subscriber->clndata=clndata;
+							
+							
+							//figure out the subscriber sentinel
+							subscriber_sentinel = ((ngx_http_push_pid_queue_t *)found)->subscriber_sentinel;
+							if(subscriber_sentinel==NULL) {
+								//it's perfectly nornal for the sentinel to be NULL.
+								if((subscriber_sentinel=ngx_palloc(ngx_http_push_pool, sizeof(*subscriber_sentinel)))==NULL) {
+									ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
+									ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate channel subscriber sentinel");
+									return NGX_HTTP_INTERNAL_SERVER_ERROR;
+								}
+								ngx_queue_init(&subscriber_sentinel->queue);
+								((ngx_http_push_pid_queue_t *)found)->subscriber_sentinel=subscriber_sentinel;
+							}
+							
+							ngx_queue_insert_tail(&subscriber_sentinel->queue, &subscriber->queue);
+							
+							channel->subscribers++; // do this only when we know everything went okay.
+							ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
 							
 							if(clndata_prev==NULL) {
 								clndata_first = clndata;
@@ -493,26 +517,6 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 					}
 					clndata->next = clndata_first; //loop it up!
 					cln->data = clndata;
-					
-					subscriber->clndata=clndata;
-					
-					ngx_shmtx_lock(&shpool->mutex);
-					channel->subscribers++; // do this only when we know everything went okay.
-					
-					//figure out the subscriber sentinel
-					subscriber_sentinel = ((ngx_http_push_pid_queue_t *)found)->subscriber_sentinel;
-					if(subscriber_sentinel==NULL) {
-						//it's perfectly nornal for the sentinel to be NULL.
-						if((subscriber_sentinel=ngx_palloc(ngx_http_push_pool, sizeof(*subscriber_sentinel)))==NULL) {
-							ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate channel subscriber sentinel");
-							return NGX_HTTP_INTERNAL_SERVER_ERROR;
-						}
-						ngx_queue_init(&subscriber_sentinel->queue);
-						((ngx_http_push_pid_queue_t *)found)->subscriber_sentinel=subscriber_sentinel;
-					}
-					ngx_shmtx_unlock(&shpool->mutex);
-					
-					ngx_queue_insert_tail(&subscriber_sentinel->queue, &subscriber->queue);
 					
 					r->read_event_handler = ngx_http_test_reading;
 					r->write_event_handler = ngx_http_request_empty_handler;
@@ -543,12 +547,12 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 		
 		case NGX_HTTP_PUSH_MESSAGE_FOUND:
 			//found the message
-			ngx_shmtx_lock(&shpool->mutex);
+			ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
 			ngx_http_push_reserve_message_locked(channel, msg);
 			
-			if((etag = ngx_pcalloc(sizeof(*etag) + ngx_http_push_get_etag_length(cf), r->pool))==NULL) {
+			if((etag = ngx_pcalloc(r->pool, sizeof(*etag) + ngx_http_push_get_etag_length(cf)))==NULL) {
 				//oh, nevermind...
-				ngx_shmtx_unlock(&shpool->mutex);
+				ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for Etag header");
 				return NGX_ERROR;
 			}
@@ -559,15 +563,15 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, r->pool);
 				if(content_type==NULL) {
 					ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for content-type header while responding to subscriber request");
-					ngx_shmtx_unlock(&shpool->mutex);
+					ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
 					return NGX_ERROR;
 				}
 			}
 			
 			//preallocate output chain. yes, same one for every waiting subscriber
-			if((chain = ngx_http_push_create_output_chain_locked(msg->buf, r->pool, r->connection->log, shpool))==NULL) {
+			if((chain = ngx_http_push_create_output_chain_locked(msg->buf, r->pool, r->connection->log, ngx_http_push_shpool))==NULL) {
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate buffer chain while responding to subscriber request");
-				ngx_shmtx_unlock(&shpool->mutex);
+				ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
 				return NGX_ERROR;
 			}
 			
@@ -575,7 +579,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 			
 			//is the message still needed?
 			ngx_http_push_release_message_locked(channel, msg);
-			ngx_shmtx_unlock(&shpool->mutex);
+			ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
 			
 			if(chain->buf->file!=NULL) {
 				//close file when we're done with it
@@ -955,7 +959,7 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
 		ngx_shmtx_lock(&shpool->mutex);
 		
 		//etag
-		NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_pcalloc, ngx_http_push_pool);
+		//NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_pcalloc, ngx_http_push_pool); //NO!
 		if(etag==NULL) {
 			//oh, nevermind...
 			ngx_shmtx_unlock(&shpool->mutex);
