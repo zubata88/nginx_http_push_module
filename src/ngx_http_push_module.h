@@ -86,6 +86,11 @@ typedef struct {
 	ngx_int_t                       authorize_channel;
 } ngx_http_push_loc_conf_t;
 
+typedef struct {
+	time_t                          time; //tag message by time
+	ngx_int_t                       tag;  //used in conjunction with message_time if more than one message have the same time.
+} ngx_http_push_msg_id_t;
+
 //message queue
 typedef struct {
     ngx_queue_t                     queue; //this MUST be first.
@@ -94,8 +99,7 @@ typedef struct {
 	ngx_buf_t                      *buf;
 	time_t                          expires;
 	ngx_uint_t                      delete_oldest_received_min_messages; //NGX_MAX_UINT32_VALUE for 'never'
-	time_t                          message_time; //tag message by time
-	ngx_int_t                       message_tag;  //used in conjunction with message_time if more than one message have the same time.
+	ngx_http_push_msg_id_t          id;
 	ngx_int_t                       refcount;
 } ngx_http_push_msg_t;
 
@@ -163,11 +167,14 @@ typedef struct {
 	ngx_http_push_subscriber_t     *subscriber_sentinel; //->a worker's local pool
 } ngx_http_push_worker_msg_t;
 
+
+
 //shared memory
 typedef struct {
 	ngx_rbtree_t                    tree;
 	ngx_uint_t                      channels; //# of channels being used
 	ngx_http_push_worker_msg_t     *ipc; //interprocess stuff
+	ngx_http_push_msg_id_t          tag_counter; //shared message storage-related data.
 } ngx_http_push_shm_data_t;
 
 ngx_int_t           ngx_http_push_worker_processes;
@@ -189,6 +196,7 @@ static ngx_inline void ngx_http_push_general_delete_message_locked(ngx_http_push
 #define ngx_http_push_force_delete_message_locked(channel, msg, shpool) ngx_http_push_general_delete_message_locked(channel, msg, 1, shpool)
 static ngx_inline void ngx_http_push_free_message_locked(ngx_http_push_msg_t *msg, ngx_slab_pool_t *shpool);
 static ngx_http_push_msg_t * ngx_http_push_find_message_locked(ngx_http_push_channel_t *channel, ngx_http_request_t *r, ngx_int_t *status);
+static ngx_uint_t ngx_http_push_generate_message_tag_locked(time_t t);
 
 //channel
 static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_push_loc_conf_t *cf, ngx_http_push_channel_id_t **next_channel_id);

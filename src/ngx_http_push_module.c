@@ -148,10 +148,10 @@ static ngx_http_push_msg_t * ngx_http_push_find_message_locked(ngx_http_push_cha
 	
 	// do we want a future message?
 	msg = ngx_queue_data(sentinel->prev, ngx_http_push_msg_t, queue); 
-	if(time <= msg->message_time) { //that's an empty check (Sentinel's values are zero)
-		if(time == msg->message_time) {
+	if(time <= msg->id.time) { //that's an empty check (Sentinel's values are zero)
+		if(time == msg->id.time) {
 			if(tag<0) { tag = ngx_http_push_subscriber_get_etag_int(r); }
-			if(tag >= msg->message_tag) {
+			if(tag >= msg->id.tag) {
 				*status=NGX_HTTP_PUSH_MESSAGE_EXPECTED;
 				return NULL;
 			}
@@ -164,17 +164,17 @@ static ngx_http_push_msg_t * ngx_http_push_find_message_locked(ngx_http_push_cha
 	
 	while(cur!=sentinel) {
 		msg = ngx_queue_data(cur, ngx_http_push_msg_t, queue);
-		if (time < msg->message_time) {
+		if (time < msg->id.time) {
 			*status = NGX_HTTP_PUSH_MESSAGE_FOUND;
 			return msg;
 		}
-		else if(time == msg->message_time) {
+		else if(time == msg->id.time) {
 			if(tag<0) { tag = ngx_http_push_subscriber_get_etag_int(r); }
-			while (tag >= msg->message_tag  && time == msg->message_time && ngx_queue_next(cur)!=sentinel) {
+			while (tag >= msg->id.tag  && time == msg->id.time && ngx_queue_next(cur)!=sentinel) {
 				cur=ngx_queue_next(cur);
 				msg = ngx_queue_data(cur, ngx_http_push_msg_t, queue);
 			}
-			if(time == msg->message_time && tag < msg->message_tag) {
+			if(time == msg->id.time && tag < msg->id.tag) {
 				*status = NGX_HTTP_PUSH_MESSAGE_FOUND;
 				return msg;
 			}
@@ -291,7 +291,7 @@ static ngx_int_t ngx_http_push_set_etag(ngx_str_t *etag, time_t basetime, ngx_ht
 	u_char                          *cur = etag->data;
 	for(i=0; i<channels; i++) {
 		if(finish_later_channel_number != i) {
-			cur = ngx_sprintf(cur, "|%ui:%ui", scratch[i].msg->message_time - basetime, scratch[i].msg->message_tag);
+			cur = ngx_sprintf(cur, "|%ui:%ui", scratch[i].msg->id.time - basetime, scratch[i].msg->id.tag);
 		}
 		else {
 			ngx_memcpy(cur, "|%ui:%ui", 8);
@@ -388,8 +388,8 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 			else if(scratch_cur->msg_search_outcome == scratch_chosen->msg_search_outcome) {
 				if(scratch_cur->msg_search_outcome == NGX_HTTP_PUSH_MESSAGE_FOUND) {
 					ngx_http_push_msg_t *msg_found = scratch_cur->msg, *msg_chosen = scratch_chosen->msg;
-					if(msg_found->message_time < msg_chosen->message_time ||
-					  (msg_found->message_time == msg_chosen->message_time && msg_found->message_tag < msg_chosen->message_tag)) { //assumes unique message_tags per second
+					if(msg_found->id.time < msg_chosen->id.time ||
+					  (msg_found->id.time == msg_chosen->id.time && msg_found->id.tag < msg_chosen->id.tag)) { //assumes unique message_tags per second
 						scratch_chosen = scratch_cur;
 					}
 				}
@@ -410,7 +410,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 		size_t                      content_type_len;
 		ngx_str_t                  *etag, *content_type;
 		size_t                      max_etag_size;
-		time_t                      basetime = scratch_chosen->msg->message_time;
+		time_t                      basetime = scratch_chosen->msg->id.time;
 		
 		case NGX_HTTP_PUSH_MESSAGE_EXPECTED:
 			// ♫ It's gonna be the future soon ♫
@@ -575,7 +575,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 				return NGX_ERROR;
 			}
 			
-			last_modified = msg->message_time;
+			last_modified = msg->id.time;
 			
 			//is the message still needed?
 			ngx_http_push_release_message_locked(channel, msg);
@@ -818,8 +818,8 @@ static void ngx_http_push_publisher_body_handler(ngx_http_request_t * r) {
 			}
 			
 			//Stamp the new message with entity tags
-			msg->message_time=ngx_time(); //ESSENTIAL TODO: make sure this ends up producing GMT time
-			msg->message_tag=(previous_msg!=NULL && msg->message_time == previous_msg->message_time) ? (previous_msg->message_tag + 1) : 0;		
+			msg->id.time=ngx_time(); 
+			msg->id.tag=ngx_http_push_generate_message_tag_locked(msg->id.time);
 			
 			//store the content-type
 			if(content_type_len>0) {
@@ -936,6 +936,18 @@ static void ngx_http_push_publisher_body_handler(ngx_http_request_t * r) {
 	}
 }
 
+static ngx_uint_t ngx_http_push_generate_message_tag_locked(time_t t) {
+	ngx_http_push_msg_id_t         *lastid = &((ngx_http_push_shm_data_t *) ngx_http_push_shm_zone->data)->tag_counter;
+	if(lastid->time == t) {
+		return ++(lastid->tag);
+	}
+	else {
+		lastid->time=t;
+		lastid->tag=0;
+		return 0;
+	}
+}
+
 static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *channel, ngx_http_push_subscriber_t *sentinel, ngx_http_push_msg_t *msg, ngx_int_t status_code, const ngx_str_t *status_line) {
 	ngx_slab_pool_t                *shpool = ngx_http_push_shpool;
 	ngx_http_push_subscriber_t     *cur, *next;
@@ -990,7 +1002,7 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
 		buffer = chain->buf;
 		pos = buffer->pos;
 		
-		last_modified_time = msg->message_time;
+		last_modified_time = msg->id.time;
 		
 		ngx_shmtx_unlock(&shpool->mutex);
 		

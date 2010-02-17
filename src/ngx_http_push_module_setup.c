@@ -43,6 +43,10 @@ static ngx_int_t	ngx_http_push_init_shm_zone(ngx_shm_zone_t * shm_zone, void *da
 		return NGX_ERROR;
 	}
 	ngx_rbtree_init(&d->tree, sentinel, ngx_http_push_rbtree_insert);
+	
+	//initialize message tag counter
+	d->tag_counter.time=0;
+	d->tag_counter.tag =0;
 	return NGX_OK;
 }
 
