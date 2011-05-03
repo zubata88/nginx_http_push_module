@@ -439,10 +439,10 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
 						ngx_add_timer(&subscriber->event, cf->subscriber_timeout * 1000);
 					}
 
-					//r->read_event_handler = ngx_http_test_reading;
-					//r->write_event_handler = ngx_http_request_empty_handler;
+					r->read_event_handler = ngx_http_test_reading;
+					r->write_event_handler = ngx_http_request_empty_handler;
 					r->discard_body = 1;
-					//r->keepalive = 1; //stayin' alive!!
+					r->keepalive = 1; //stayin' alive!!
 					return NGX_DONE;
 					
 				case NGX_HTTP_PUSH_MECHANISM_INTERVALPOLL:
